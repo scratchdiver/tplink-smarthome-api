@@ -271,6 +271,62 @@ export default class KlapConnection {
     this.log.debug(`KlapConnection(${this.description}): handshake complete`);
   }
 
+  private async sendEncrypted(
+    payload: string,
+    timeout: number,
+  ): Promise<{
+    response: KlapHttpResponse;
+    session: KlapEncryptionSession;
+    seq: number;
+  }> {
+    if (!this.handshakeDone || this.handshakeSessionExpired()) {
+      await this.performHandshake(timeout);
+    }
+
+    const session = this.encryptionSession;
+    if (session == null) {
+      throw new Error(
+        `KLAP handshake did not establish a session with ${this.host}`,
+      );
+    }
+
+    const { payload: encrypted, seq } = session.encrypt(payload);
+    const response = await httpPost(`${this.appUrl}/request`, {
+      body: encrypted,
+      cookies: this.sessionCookie,
+      timeout,
+      params: { seq },
+    });
+    return { response, session, seq };
+  }
+
+  private decodeResponse({
+    response,
+    session,
+    seq,
+  }: {
+    response: KlapHttpResponse;
+    session: KlapEncryptionSession;
+    seq: number;
+  }): string {
+    if (response.status !== 200) {
+      if (response.status === 403) {
+        this.handshakeDone = false;
+      }
+      throw new Error(
+        `Device ${this.host} responded with ${response.status} to request with seq ${seq}`,
+      );
+    }
+
+    try {
+      return session.decrypt(response.body);
+    } catch (err) {
+      throw new Error(
+        `Error trying to decrypt device ${this.host} response: ${String(err)}`,
+      );
+    }
+  }
+
   async send(
     payload: string,
     port: number,
@@ -281,43 +337,20 @@ export default class KlapConnection {
     this.host = host;
 
     return this.queue.add(async () => {
-      if (!this.handshakeDone || this.handshakeSessionExpired()) {
-        await this.performHandshake(timeout);
+      const first = await this.sendEncrypted(payload, timeout);
+      if (first.response.status !== 403) {
+        return this.decodeResponse(first);
       }
 
-      const session = this.encryptionSession;
-      if (session == null) {
-        throw new Error(
-          `KLAP handshake did not establish a session with ${this.host}`,
-        );
-      }
-
-      const { payload: encrypted, seq } = session.encrypt(payload);
-      const response = await httpPost(`${this.appUrl}/request`, {
-        body: encrypted,
-        cookies: this.sessionCookie,
-        timeout,
-        params: { seq },
-      });
-
-      if (response.status !== 200) {
-        if (response.status === 403) {
-          this.handshakeDone = false;
-        }
-        throw new Error(
-          `Device ${this.host} responded with ${response.status} to request with seq ${seq}`,
-        );
-      }
-
-      try {
-        return session.decrypt(response.body);
-      } catch (err) {
-        throw new Error(
-          `Error trying to decrypt device ${this.host} response: ${String(
-            err,
-          )}`,
-        );
-      }
+      // Devices drop KLAP sessions before the advertised TIMEOUT (idle, or
+      // another client negotiated a session). Renegotiate once and resend,
+      // as python-kasa does.
+      this.log.debug(
+        `KlapConnection(${this.description}): session rejected (403), renegotiating`,
+      );
+      this.reset();
+      const second = await this.sendEncrypted(payload, timeout);
+      return this.decodeResponse(second);
     });
   }
 }

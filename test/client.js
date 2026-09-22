@@ -51,6 +51,48 @@ describe('Client', function () {
     });
   });
 
+  describe('#createOrUpdateDeviceFromSysInfo()', function () {
+    it('should update the transport when rediscovery changes an existing device to KLAP', function () {
+      const client = getTestClient();
+      const sysInfo = validPlugDiscoveryResponse.system.get_sysinfo;
+
+      client.createOrUpdateDeviceFromSysInfo({
+        sysInfo,
+        host: '192.0.2.1',
+        port: 9999,
+        options: { defaultSendOptions: { transport: 'tcp', timeout: 5000 } },
+        breakoutChildren: false,
+      });
+
+      const device = client.devices.get(sysInfo.deviceId);
+      expect(device.port).to.equal(9999);
+      expect(device.defaultSendOptions.transport).to.equal('tcp');
+
+      client.createOrUpdateDeviceFromSysInfo({
+        sysInfo,
+        host: '192.0.2.1',
+        port: 80,
+        options: { defaultSendOptions: { transport: 'klap' } },
+        breakoutChildren: false,
+      });
+
+      expect(device.port).to.equal(80);
+      expect(device.defaultSendOptions.transport).to.equal('klap');
+      expect(device.defaultSendOptions.timeout).to.equal(5000);
+      // Homebridge also supplies these defaults on legacy UDP discovery.
+      client.createOrUpdateDeviceFromSysInfo({
+        sysInfo,
+        host: '192.0.2.1',
+        options: {
+          defaultSendOptions: { transport: undefined, timeout: 5000 },
+        },
+        breakoutChildren: false,
+      });
+      expect(device.port).to.equal(80);
+      expect(device.defaultSendOptions.transport).to.equal('klap');
+    });
+  });
+
   describe('#startDiscovery()', function () {
     this.retries(1);
     this.timeout(config.defaultTestTimeout * 2);

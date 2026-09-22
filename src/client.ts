@@ -978,6 +978,9 @@ class Client extends EventEmitter {
         device = this.devices.get(id)!;
         device.host = host;
         if (port != null) device.port = port;
+        if (options?.defaultSendOptions?.transport === 'klap') {
+          device.defaultSendOptions.transport = 'klap';
+        }
         Client.setSysInfoForDevice(device, sysInfo);
         device.status = 'online';
         device.seenOnDiscovery = this.discoveryPacketSequence;
